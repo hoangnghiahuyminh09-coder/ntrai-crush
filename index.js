@@ -1,55 +1,93 @@
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+require('dotenv').config();
+
 const app = express();
 app.use(bodyParser.json());
 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'ntrai123';
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'ntrai123';
 
-app.get('/', (req,res)=> res.send('NTrai Crush Bot is running!'));
+let waitingUser = null;
+let pairs = {};
 
-app.get('/webhook', (req,res)=>{
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  if(mode && token){
-    if(mode==='subscribe' && token===VERIFY_TOKEN){
-      console.log('WEBHOOK_VERIFIED');
-      res.status(200).send(challenge);
-    } else {
-      res.sendStatus(403);
-    }
-  } else res.sendStatus(400);
+async function sendMessage(recipientId, text) {
+  await axios.post(`https://graph.facebook.com/v22.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+    recipient: { id: recipientId },
+    message: { text: text }
+  });
+}
+
+// Webhook verify
+app.get('/webhook', (req, res) => {
+  if (req.query['hub.verify_token'] === VERIFY_TOKEN) {
+    res.send(req.query['hub.challenge']);
+  } else {
+    res.send('Error');
+  }
 });
 
-app.post('/webhook', async (req,res)=>{
+app.post('/webhook', async (req, res) => {
   const body = req.body;
-  if(body.object==='page'){
-    for(const entry of body.entry){
-      const webhook_event = entry.messaging[0];
-      if(webhook_event.message && webhook_event.message.text){
-        const sender_psid = webhook_event.sender.id;
-        const text = webhook_event.message.text.toLowerCase();
-        let reply = `Hehe bạn nói "${webhook_event.message.text}" cute thế 😏 NTrai crush bạn rồi đó!`;
-        if(text.includes('hello')||text.includes('hi')||text.includes('chào')) reply = "Chào em iu 😘 Anh là NTrai đây, em cần anh thả thính gì nào?";
-        if(text.includes('yêu') ) reply = "Yêu là phải nói, cũng như đói là phải ăn 😚 Em đồng ý làm người yêu anh nhé?";
-        await sendMessage(sender_psid, reply);
+  if (body.object === 'page') {
+    for (const entry of body.entry) {
+      const event = entry.messaging[0];
+      const senderId = event.sender.id;
+      const message = event.message?.text?.trim().toLowerCase();
+      if (!message) continue;
+
+      console.log(senderId, message);
+
+      // LỆNH /CHAT
+      if (message === '/chat') {
+        if (pairs[senderId]) {
+          await sendMessage(senderId, "Bạn đang trong phòng chat rồi. Gửi \"/thoat\" để rời khỏi.");
+          continue;
+        }
+        if (waitingUser && waitingUser!== senderId) {
+          const partner = waitingUser;
+          waitingUser = null;
+          pairs[senderId] = partner;
+          pairs[partner] = senderId;
+          await sendMessage(senderId, "🔗 Đã ghép đôi! Hãy bắt đầu trò chuyện.");
+          await sendMessage(partner, "🔗 Đã ghép đôi! Hãy bắt đầu trò chuyện.");
+        } else {
+          waitingUser = senderId;
+          // Tin nhắn y hệt PCT Crush
+          await sendMessage(senderId, "⏳ Đang chờ người ghép đôi... Gửi \"/thoat\" để rời khỏi.");
+        }
+      }
+      // LỆNH /THOAT
+      else if (message === '/thoat' || message === '/end') {
+        const partnerId = pairs[senderId];
+        if (partnerId) {
+          delete pairs[senderId];
+          delete pairs[partnerId];
+          await sendMessage(senderId, "Bạn đã rời khỏi phòng chat. Gõ /chat để tìm người mới.");
+          await sendMessage(partnerId, "Người kia đã rời khỏi. Gõ /chat để tìm người mới.");
+        } else if (waitingUser === senderId) {
+          waitingUser = null;
+          await sendMessage(senderId, "Bạn đã rời khỏi hàng chờ. Gõ /chat để tìm lại.");
+        } else {
+          await sendMessage(senderId, "Bạn chưa ghép với ai cả. Gõ /chat để bắt đầu.");
+        }
+      }
+      // ĐANG CHAT
+      else {
+        const partnerId = pairs[senderId];
+        if (partnerId) {
+          await sendMessage(partnerId, event.message.text); // chuyển nguyên văn
+        } else {
+          await sendMessage(senderId, "Gõ /chat để tìm người lạ nhé!");
+        }
       }
     }
     res.status(200).send('EVENT_RECEIVED');
-  } else res.sendStatus(404);
+  } else {
+    res.sendStatus(404);
+  }
 });
 
-async function sendMessage(psid, text){
-  try{
-    await axios.post(`https://graph.facebook.com/v20.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-      recipient:{id:psid},
-      message:{text}
-    });
-  } catch(e){ console.error(e.response?.data || e.message); }
-}
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=> console.log(`Server listening on ${PORT}`));
+app.get('/', (req, res) => res.send('NTrai Crush running'));
+app.listen(process.env.PORT || 10000);
